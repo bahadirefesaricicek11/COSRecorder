@@ -26,8 +26,8 @@
         "title": "COSRecorder Ayarlar",
         "label": "config",
         "url": "index.html#/config",
-        "width": 620,
-        "height": 700,
+        "width": 640,
+        "height": 720,
         "resizable": false,
         "visible": false,
         "center": true
@@ -61,7 +61,7 @@
       "csp": null
     }
   },
-    "bundle": {
+  "bundle": {
     "active": true,
     "targets": "all",
     "icon": [

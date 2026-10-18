@@ -1,7 +1,7 @@
 [package]
 name = "cosrecorder"
-version = "0.1.0"
-description = "A Tauri App"
+version = "2.5.0"
+description = "High-Performance 120 FPS Screen Recorder with CRF Compression"
 authors = ["you"]
 edition = "2024"
 
@@ -40,5 +40,5 @@ strip = true
 
 [profile.dev]
 incremental = true
-opt-level = 0
+opt-level = 1
 debug = false

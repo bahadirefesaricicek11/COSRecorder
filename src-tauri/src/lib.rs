@@ -356,7 +356,6 @@ async fn start_capture(
     y: i32,
     w: i32,
     h: i32,
-    fps: String,
     preset: String,
     encoder: String,
     export_gif: bool,
@@ -375,6 +374,8 @@ async fn start_capture(
             return Err("Kayıt zaten devam ediyor.".into());
         }
     }
+
+    let fps = "60".to_string();
 
     let target_dir_str = if output_dir.trim().is_empty() {
         r"D:\Videolar".to_string()
@@ -398,7 +399,8 @@ async fn start_capture(
     let final_file_name = render_filename(&filename_template, export_gif);
     let final_output_path = target_path.join(&final_file_name).to_string_lossy().to_string();
 
-    let temp_video_path = target_path.join(format!("temp_vid_{}.mp4", final_file_name)).to_string_lossy().to_string();
+    // DÜZELTME: final_file_name zaten .mp4 ekini barındırdığı için ekstra .mp4 uzantısını kaldırdık
+    let temp_video_path = target_path.join(format!("temp_vid_{}", final_file_name)).to_string_lossy().to_string();
     let temp_sys_path = target_path.join(format!("temp_sys_{}.wav", final_file_name)).to_string_lossy().to_string();
     let temp_mic_path = target_path.join(format!("temp_mic_{}.wav", final_file_name)).to_string_lossy().to_string();
 
@@ -441,6 +443,8 @@ async fn start_capture(
         "gdigrab".to_string(),
         "-framerate".to_string(),
         fps.clone(),
+        "-rtbufsize".to_string(),
+        "512M".to_string(),
         "-draw_mouse".to_string(),
         if draw_mouse { "1" } else { "0" }.to_string(),
         "-offset_x".to_string(),
@@ -471,22 +475,9 @@ async fn start_capture(
     } else {
         let effective_preset = map_preset(selected_codec, &preset);
         
-        // Dynamically compute bitrate ceilings based on framerate to stop file bloat at 60/120 FPS
-        let bitrate = match fps.as_str() {
-            "120" => "8M",
-            "60" => "5M",
-            _ => "3.5M",
-        };
-        let maxrate = match fps.as_str() {
-            "120" => "12M",
-            "60" => "8M",
-            _ => "5M",
-        };
-        let bufsize = match fps.as_str() {
-            "120" => "16M",
-            "60" => "10M",
-            _ => "7M",
-        };
+        let bitrate = "5M";
+        let maxrate = "8M";
+        let bufsize = "10M";
 
         log::info!(
             "Optimizing Capture: Codec={}, FPS={}, Preset={}, TargetBitrate={}",
@@ -502,6 +493,7 @@ async fn start_capture(
                     "-maxrate".into(), maxrate.into(),
                     "-bufsize".into(), bufsize.into(),
                     "-pix_fmt".into(), "yuv420p".into(),
+                    "-fps_mode".into(), "cfr".into(),
                     output_target.clone(),
                 ]);
             }
@@ -513,11 +505,11 @@ async fn start_capture(
                     "-maxrate".into(), maxrate.into(),
                     "-bufsize".into(), bufsize.into(),
                     "-pix_fmt".into(), "yuv420p".into(),
+                    "-fps_mode".into(), "cfr".into(),
                     output_target.clone(),
                 ]);
             }
             _ => {
-                // Highly optimized CPU multithreaded profile
                 ffmpeg_args.extend(vec![
                     "-c:v".into(), "libx264".into(),
                     "-preset".into(), effective_preset.to_string(),
@@ -526,7 +518,8 @@ async fn start_capture(
                     "-maxrate".into(), maxrate.into(),
                     "-bufsize".into(), bufsize.into(),
                     "-pix_fmt".into(), "yuv420p".into(),
-                    "-threads".into(), "0".into(), // Leverage all CPU cores
+                    "-fps_mode".into(), "cfr".into(),
+                    "-threads".into(), "0".into(),
                     output_target.clone(),
                 ]);
             }

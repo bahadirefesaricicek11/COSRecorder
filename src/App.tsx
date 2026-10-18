@@ -71,7 +71,7 @@ function App() {
 // ==================== TIMER ====================
 function TimerWidget() {
   const [seconds, setSeconds] = useState(0);
-  const [meta, setMeta] = useState({ fps: "0", size: "0" });
+  const [meta, setMeta] = useState({ fps: "60", size: "0" });
 
   useEffect(() => {
     setSeconds(0);
@@ -126,7 +126,6 @@ function TimerWidget() {
 
 function ConfigView() {
   const [outputPath, setOutputPath] = useState(() => localStorage.getItem("cfg_output_path") || "D:\\Videolar");
-  const [fps, setFps] = useState(() => localStorage.getItem("cfg_fps") || "60");
   const [preset, setPreset] = useState(() => localStorage.getItem("cfg_preset") || "ultrafast");
   const [encoder, setEncoder] = useState(() => localStorage.getItem("cfg_encoder") || "cpu");
   const [exportGif, setExportGif] = useState(() => localStorage.getItem("cfg_gif") === "true");
@@ -201,7 +200,6 @@ function ConfigView() {
 
   const saveSettings = async () => {
     localStorage.setItem("cfg_output_path", outputPath);
-    localStorage.setItem("cfg_fps", fps);
     localStorage.setItem("cfg_preset", preset);
     localStorage.setItem("cfg_encoder", encoder);
     localStorage.setItem("cfg_gif", String(exportGif));
@@ -342,11 +340,11 @@ function ConfigView() {
           </select>
         </div>
         <div className="flex flex-col gap-1.5">
-          <label className="text-zinc-400 text-xs">FPS</label>
-          <select value={fps} onChange={(e) => setFps(e.target.value)}
-            className="bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm">
-            <option value="30">30</option><option value="60">60</option><option value="120">120</option>
-          </select>
+          <label className="text-zinc-400 text-xs">FPS KİLİDİ</label>
+          <div className="bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm flex items-center justify-between text-zinc-300 font-mono">
+            <span>60 FPS</span>
+            <span className="text-[10px] bg-blue-900/60 text-blue-300 px-1.5 py-0.5 rounded">Sabit Kalite</span>
+          </div>
         </div>
       </div>
 
@@ -594,7 +592,6 @@ function OverlayRecorderView() {
     try {
       await invoke("start_capture", {
         x: selection.x, y: selection.y, w: selection.w, h: selection.h,
-        fps: localStorage.getItem("cfg_fps") || "60",
         preset: localStorage.getItem("cfg_preset") || "ultrafast",
         encoder: localStorage.getItem("cfg_encoder") || "cpu",
         exportGif: localStorage.getItem("cfg_gif") === "true",
