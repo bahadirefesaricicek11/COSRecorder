@@ -1,6 +1,6 @@
 {
-  "productName": "cosrecorder",
-  "version": "0.1.0",
+  "productName": "COSRecorder",
+  "version": "2.0.0",
   "identifier": "com.cosrecorder.dev",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -11,21 +11,57 @@
   "app": {
     "windows": [
       {
-        "title": "COSRecorder",
+        "title": "COSRecorder Overlay",
+        "label": "main",
         "width": 800,
         "height": 600,
         "decorations": false,
+        "shadow": false,
         "transparent": true,
         "alwaysOnTop": true,
         "fullscreen": true,
         "visible": false
+      },
+      {
+        "title": "COSRecorder Ayarlar",
+        "label": "config",
+        "url": "index.html#/config",
+        "width": 620,
+        "height": 700,
+        "resizable": false,
+        "visible": false,
+        "center": true
+      },
+      {
+        "title": "COSRecorder Galeri",
+        "label": "gallery",
+        "url": "index.html#/gallery",
+        "width": 900,
+        "height": 640,
+        "resizable": true,
+        "visible": false,
+        "center": true
+      },
+      {
+        "title": "COSRecorder Timer",
+        "label": "timer",
+        "url": "index.html#/timer",
+        "width": 240,
+        "height": 56,
+        "decorations": false,
+        "shadow": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "resizable": false,
+        "visible": false,
+        "skipTaskbar": true
       }
     ],
     "security": {
       "csp": null
     }
   },
-  "bundle": {
+    "bundle": {
     "active": true,
     "targets": "all",
     "icon": [
@@ -37,6 +73,12 @@
     ],
     "externalBin": [
       "binaries/ffmpeg"
-    ]
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      }
+    }
   }
 }
