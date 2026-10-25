@@ -124,22 +124,29 @@ function TimerWidget() {
   );
 }
 
+// ==================== CONFIG ====================
 function ConfigView() {
   const [outputPath, setOutputPath] = useState(() => localStorage.getItem("cfg_output_path") || "D:\\Videolar");
   const [preset, setPreset] = useState(() => localStorage.getItem("cfg_preset") || "ultrafast");
   const [encoder, setEncoder] = useState(() => localStorage.getItem("cfg_encoder") || "cpu");
   const [exportGif, setExportGif] = useState(() => localStorage.getItem("cfg_gif") === "true");
+  const [gifFps, setGifFps] = useState(() => localStorage.getItem("cfg_gif_fps") || "15");
   const [recordSystemAudio, setRecordSystemAudio] = useState(() => localStorage.getItem("cfg_sys_audio") === "true");
   const [recordMic, setRecordMic] = useState(() => localStorage.getItem("cfg_mic_audio") === "true");
   const [sysAudioDevice, setSysAudioDevice] = useState(() => localStorage.getItem("cfg_sys_dev") || "");
   const [micDevice, setMicDevice] = useState(() => localStorage.getItem("cfg_mic_dev") || "");
   
+  const [instantReplay, setInstantReplay] = useState(() => localStorage.getItem("cfg_instant_replay") === "true");
+  const [replayDuration, setReplayDuration] = useState(() => localStorage.getItem("cfg_replay_duration") || "30");
+  const [startOnBoot, setStartOnBoot] = useState(() => localStorage.getItem("cfg_autostart") === "true");
+
   const [sysDevices, setSysDevices] = useState<string[]>([]);
   const [micDevices, setMicDevices] = useState<string[]>([]);
 
   const [shortcut, setShortcut] = useState(() => localStorage.getItem("cfg_shortcut") || "CommandOrControl+Shift+R");
   const [countdown, setCountdown] = useState(() => parseInt(localStorage.getItem("cfg_countdown") || "0"));
   const [drawMouse, setDrawMouse] = useState(() => localStorage.getItem("cfg_draw_mouse") !== "false");
+  const [showTimer, setShowTimer] = useState(() => localStorage.getItem("cfg_show_timer") !== "false");
   const [filenameTemplate, setFilenameTemplate] = useState(() => localStorage.getItem("cfg_filename_tpl") || "COSRecorder_%datetime%");
   const [diskFree, setDiskFree] = useState<number | null>(null);
   const [recording, setRecording] = useState(false);
@@ -203,6 +210,7 @@ function ConfigView() {
     localStorage.setItem("cfg_preset", preset);
     localStorage.setItem("cfg_encoder", encoder);
     localStorage.setItem("cfg_gif", String(exportGif));
+    localStorage.setItem("cfg_gif_fps", gifFps);
     localStorage.setItem("cfg_sys_audio", String(recordSystemAudio));
     localStorage.setItem("cfg_mic_audio", String(recordMic));
     localStorage.setItem("cfg_sys_dev", sysAudioDevice);
@@ -210,14 +218,26 @@ function ConfigView() {
     localStorage.setItem("cfg_shortcut", shortcut);
     localStorage.setItem("cfg_countdown", String(countdown));
     localStorage.setItem("cfg_draw_mouse", String(drawMouse));
+    localStorage.setItem("cfg_show_timer", String(showTimer));
     localStorage.setItem("cfg_filename_tpl", filenameTemplate);
+    
+    localStorage.setItem("cfg_instant_replay", String(instantReplay));
+    localStorage.setItem("cfg_replay_duration", replayDuration);
+    localStorage.setItem("cfg_autostart", String(startOnBoot));
+    
     localStorage.setItem("cfg_welcomed", "true");
+
+    try {
+      await invoke("set_autostart", { enable: startOnBoot });
+    } catch (e) {
+      console.warn("Autostart setting failed:", e);
+    }
+
     if (shortcut) {
       try {
-        await invoke("disable_shortcut");
         await invoke("set_shortcut", { accelerator: shortcut });
       } catch (e) {
-        alert(`Kısayol kaydedilemedi (${shortcut}). Başka bir uygulama tarafından kullanılıyor olabilir.`);
+        alert(`Kısayol kaydedilemedi (${shortcut}).`);
         const old = localStorage.getItem("cfg_shortcut") || "";
         if (old) invoke("set_shortcut", { accelerator: old }).catch(() => {});
         return;
@@ -274,7 +294,7 @@ function ConfigView() {
         <h1 className="text-xl font-bold flex items-center gap-2">
           <span className="w-2.5 h-2.5 rounded-full bg-blue-500" /> COSRecorder Ayarlar
         </h1>
-        <span className="text-xs text-zinc-500 font-mono">v2.0.0</span>
+        <span className="text-xs text-zinc-500 font-mono">v2.6.2</span>
       </div>
 
       <div className="flex flex-col gap-1.5">
@@ -289,6 +309,33 @@ function ConfigView() {
         <input type="text" value={filenameTemplate} onChange={(e) => setFilenameTemplate(e.target.value)}
           className="bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 font-mono text-sm focus:outline-none focus:border-blue-500" />
         <span className="text-xs text-zinc-500">Kullanılabilir: %datetime%, %date%, %time%</span>
+      </div>
+
+      <div className="flex flex-col gap-3 p-4 bg-zinc-900/60 border border-zinc-800 rounded-xl">
+        <span className="text-zinc-200 font-semibold text-sm">⚡ Instant Replay & Başlangıç</span>
+        
+        <label className="flex items-center justify-between text-xs text-zinc-300 cursor-pointer">
+          <span>Uygulama açıldığında Instant Replay'i Otomatik Başlat</span>
+          <input type="checkbox" checked={instantReplay} onChange={(e) => setInstantReplay(e.target.checked)}
+            className="rounded accent-blue-500 w-4 h-4" />
+        </label>
+
+        <div className="flex items-center justify-between text-xs text-zinc-300">
+          <span>Replay Tampon Süresi</span>
+          <select value={replayDuration} onChange={(e) => setReplayDuration(e.target.value)}
+            className="bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-xs">
+            <option value="15">15 Saniye</option>
+            <option value="30">30 Saniye</option>
+            <option value="60">60 Saniye</option>
+            <option value="120">120 Saniye</option>
+          </select>
+        </div>
+
+        <label className="flex items-center justify-between text-xs text-zinc-300 cursor-pointer border-t border-zinc-800/80 pt-2">
+          <span>Windows Açılışında Otomatik Başlat (Boot)</span>
+          <input type="checkbox" checked={startOnBoot} onChange={(e) => setStartOnBoot(e.target.checked)}
+            className="rounded accent-blue-500 w-4 h-4" />
+        </label>
       </div>
 
       <div className="flex flex-col gap-3 p-4 bg-zinc-900/60 border border-zinc-800 rounded-xl">
@@ -388,13 +435,26 @@ function ConfigView() {
       </div>
 
       <div className="flex flex-col gap-2 p-4 bg-zinc-900/60 border border-zinc-800 rounded-xl">
-        <label className="flex items-center gap-2 text-sm text-zinc-300 cursor-pointer">
-          <input type="checkbox" checked={exportGif} onChange={(e) => setExportGif(e.target.checked)}
-            className="rounded accent-blue-500 w-3.5 h-3.5" /> MP4 yerine GIF olarak kaydet
-        </label>
+        <div className="flex items-center justify-between border-b border-zinc-800 pb-2 mb-1">
+          <label className="flex items-center gap-2 text-sm text-zinc-300 cursor-pointer">
+            <input type="checkbox" checked={exportGif} onChange={(e) => setExportGif(e.target.checked)}
+              className="rounded accent-blue-500 w-3.5 h-3.5" /> MP4 yerine GIF olarak kaydet
+          </label>
+          {exportGif && (
+            <select value={gifFps} onChange={(e) => setGifFps(e.target.value)}
+              className="bg-zinc-900 border border-zinc-800 text-xs px-2 py-0.5 rounded text-zinc-300">
+              <option value="15">15 FPS</option>
+              <option value="30">30 FPS (Akıcı)</option>
+            </select>
+          )}
+        </div>
         <label className="flex items-center gap-2 text-sm text-zinc-300 cursor-pointer">
           <input type="checkbox" checked={drawMouse} onChange={(e) => setDrawMouse(e.target.checked)}
             className="rounded accent-blue-500 w-3.5 h-3.5" /> Fare imlecini kayıtta göster
+        </label>
+        <label className="flex items-center gap-2 text-sm text-zinc-300 cursor-pointer">
+          <input type="checkbox" checked={showTimer} onChange={(e) => setShowTimer(e.target.checked)}
+            className="rounded accent-blue-500 w-3.5 h-3.5" /> Kayıt sırasında zamanlayıcıyı (timer) göster
         </label>
       </div>
 
@@ -493,6 +553,10 @@ function OverlayRecorderView() {
   const [lastRegion, setLastRegion] = useState<Region | null>(null);
   const [monitor, setMonitor] = useState<{ w: number; h: number } | null>(null);
 
+  const [isReplayActive, setIsReplayActive] = useState(false);
+  const [replayLoading, setReplayLoading] = useState(false);
+  const [clipLoading, setClipLoading] = useState(false);
+
   useEffect(() => {
     const readLast = () => {
       const saved = localStorage.getItem("last_region");
@@ -502,25 +566,13 @@ function OverlayRecorderView() {
     const sc = localStorage.getItem("cfg_shortcut") || "CommandOrControl+Shift+R";
     invoke("set_shortcut", { accelerator: sc }).catch(console.warn);
     currentMonitor().then((m) => m && setMonitor({ w: m.size.width, h: m.size.height })).catch(() => {});
+    
+    if (localStorage.getItem("cfg_instant_replay") === "true") {
+      toggleReplayBuffer(true);
+    }
+
     const un = listen("recording-stopped", readLast);
     return () => { un.then((f) => f()); };
-  }, []);
-
-  useEffect(() => {
-    let focused = true;
-    const onFocus = async () => {
-      if (!focused) {
-        focused = true;
-        const sc = localStorage.getItem("cfg_shortcut") || "CommandOrControl+Shift+R";
-        try { await invoke("set_shortcut", { accelerator: sc }); } catch {}
-      }
-    };
-    const onBlur = async () => {
-      if (focused) { focused = false; try { await invoke("disable_shortcut"); } catch {} }
-    };
-    window.addEventListener("focus", onFocus);
-    window.addEventListener("blur", onBlur);
-    return () => { window.removeEventListener("focus", onFocus); window.removeEventListener("blur", onBlur); };
   }, []);
 
   useEffect(() => {
@@ -595,17 +647,72 @@ function OverlayRecorderView() {
         preset: localStorage.getItem("cfg_preset") || "ultrafast",
         encoder: localStorage.getItem("cfg_encoder") || "cpu",
         exportGif: localStorage.getItem("cfg_gif") === "true",
+        gifFps: parseInt(localStorage.getItem("cfg_gif_fps") || "15"),
         outputDir: localStorage.getItem("cfg_output_path") || "D:\\Videolar",
         recordSystemAudio: localStorage.getItem("cfg_sys_audio") === "true",
         recordMic: localStorage.getItem("cfg_mic_audio") === "true",
         sysAudioDevice: localStorage.getItem("cfg_sys_dev") || "",
         micDevice: localStorage.getItem("cfg_mic_dev") || "",
         drawMouse: localStorage.getItem("cfg_draw_mouse") !== "false",
+        showTimer: localStorage.getItem("cfg_show_timer") !== "false",
         filenameTemplate: localStorage.getItem("cfg_filename_tpl") || "COSRecorder_%datetime%",
       });
       setSelection(null);
     } catch (error) {
       alert("Kayıt Hatası: " + (typeof error === "object" ? JSON.stringify(error) : String(error)));
+    }
+  };
+
+  const captureScreenshot = async () => {
+    if (!selection) return;
+    try {
+      await invoke("take_screenshot", {
+        x: selection.x,
+        y: selection.y,
+        w: selection.w,
+        h: selection.h,
+        outputDir: localStorage.getItem("cfg_output_path") || "D:\\Videolar"
+      });
+      setSelection(null);
+    } catch (err) {
+      alert("Screenshot Hatası: " + err);
+    }
+  };
+
+  const toggleReplayBuffer = async (forceStart = false) => {
+    setReplayLoading(true);
+    try {
+      if (isReplayActive && !forceStart) {
+        setIsReplayActive(false);
+      } else {
+        const dur = parseInt(localStorage.getItem("cfg_replay_duration") || "30");
+        await invoke("start_replay_buffer", {
+          encoder: localStorage.getItem("cfg_encoder") || "cpu",
+          durationSecs: dur,
+        });
+        setIsReplayActive(true);
+      }
+    } catch (err) {
+      console.warn("Replay Buffer Error:", err);
+    } finally {
+      setReplayLoading(false);
+    }
+  };
+
+  const handleSaveClip = async () => {
+    if (!isReplayActive) {
+      alert("Önce Replay Buffer'ı açmalısınız!");
+      return;
+    }
+    setClipLoading(true);
+    try {
+      await invoke("save_replay_clip", {
+        outputDir: localStorage.getItem("cfg_output_path") || "D:\\Videolar",
+      });
+    } catch (err) {
+      alert("Klip Hatası: " + err);
+    } finally {
+      setClipLoading(false);
     }
   };
 
@@ -638,9 +745,15 @@ function OverlayRecorderView() {
       )}
 
       {!isSelecting && !selection && (
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-zinc-900/95 backdrop-blur-md text-white px-6 py-5 rounded-xl shadow-2xl border border-zinc-700/50 pointer-events-auto text-center max-w-md">
-          <div className="font-semibold text-lg">COSRecorder Hazır</div>
-          <div className="text-zinc-400 text-xs mt-1 mb-3">Sürükle · Space = monitör · Çift sağ tık = tam ekran</div>
+        <div 
+          onMouseDown={(e) => e.stopPropagation()}
+          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-zinc-900/95 backdrop-blur-md text-white px-6 py-5 rounded-xl shadow-2xl border border-zinc-700/50 pointer-events-auto text-center max-w-md space-y-4"
+        >
+          <div>
+            <div className="font-semibold text-lg">COSRecorder Hazır</div>
+            <div className="text-zinc-400 text-xs mt-0.5">Sürükle · Space = monitör · Çift sağ tık = tam ekran</div>
+          </div>
+
           <div className="flex flex-wrap gap-1.5 justify-center">
             <button onClick={() => applyPreset("full")} className="bg-zinc-800 hover:bg-zinc-700 text-white text-xs px-3 py-1.5 rounded cursor-pointer">Tam ekran</button>
             <button onClick={() => applyPreset("1080p")} className="bg-zinc-800 hover:bg-zinc-700 text-white text-xs px-3 py-1.5 rounded cursor-pointer">1920×1080</button>
@@ -650,6 +763,38 @@ function OverlayRecorderView() {
                 Son alan ({lastRegion.w}×{lastRegion.h})
               </button>
             )}
+          </div>
+
+          <div className="border-t border-zinc-800 pt-3 space-y-2">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-zinc-400 font-medium">
+                Instant Replay ({localStorage.getItem("cfg_replay_duration") || "30"}s)
+              </span>
+              <button
+                onClick={() => toggleReplayBuffer()}
+                disabled={replayLoading}
+                className={`px-2.5 py-1 rounded text-[11px] font-bold transition-all cursor-pointer ${
+                  isReplayActive
+                    ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/50"
+                    : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700 border border-zinc-700"
+                }`}
+              >
+                {replayLoading ? "..." : isReplayActive ? "● AÇIK" : "KAPALI"}
+              </button>
+            </div>
+
+            <button
+              onClick={handleSaveClip}
+              disabled={!isReplayActive || clipLoading}
+              className={`w-full py-2 px-3 rounded-lg text-xs font-semibold flex items-center justify-between transition-all ${
+                isReplayActive
+                  ? "bg-amber-500 hover:bg-amber-400 text-zinc-950 shadow-md cursor-pointer"
+                  : "bg-zinc-800/60 text-zinc-600 border border-zinc-800 cursor-not-allowed"
+              }`}
+            >
+              <span>⚡ {clipLoading ? "Klip Alınıyor..." : "Son Saniyeleri Klip Al"}</span>
+              <kbd className="bg-black/20 px-1.5 py-0.5 rounded text-[10px] font-mono">Alt+C</kbd>
+            </button>
           </div>
         </div>
       )}
@@ -667,6 +812,10 @@ function OverlayRecorderView() {
             <button onClick={startRecording}
               className="bg-red-600 hover:bg-red-500 text-white px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 cursor-pointer">
               <div className="w-2 h-2 rounded-full bg-white animate-pulse" /> Kaydı Başlat
+            </button>
+            <button onClick={captureScreenshot}
+              className="bg-blue-600 hover:bg-blue-500 text-white px-3 py-1 rounded text-xs font-medium cursor-pointer">
+              📸 Ekran Görüntüsü
             </button>
             <button onClick={() => setSelection(null)}
               className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-2.5 py-1 rounded text-xs cursor-pointer">İptal</button>

@@ -593,7 +593,7 @@ dependencies = [
 
 [[package]]
 name = "cosrecorder"
-version = "2.5.0"
+version = "3.0.0"
 dependencies = [
  "chrono",
  "cpal",
@@ -613,6 +613,7 @@ dependencies = [
  "tauri-plugin-shell",
  "tauri-plugin-single-instance",
  "tokio",
+ "winreg",
 ]
 
 [[package]]

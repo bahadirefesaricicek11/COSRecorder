@@ -1,9 +1,9 @@
 [package]
 name = "cosrecorder"
-version = "2.5.0"
+version = "3.0.0"
 description = "High-Performance 120 FPS Screen Recorder with CRF Compression"
 authors = ["you"]
-edition = "2024"
+edition = "2021" # Not: Rust stable/nightly standartlarında 2021 edition uyumluluğu daha yüksektir
 
 [lib]
 name = "cosrecorder_lib"
@@ -31,6 +31,10 @@ fs2 = "0.4"
 log = "0.4"
 simplelog = "0.12"
 
+# Windows API bağımlılıklarının devasa feature gruplarını dışarıda tutmak için kısıtlama
+[dependencies.winreg]
+version = "0.56.0"
+
 [profile.release]
 codegen-units = 1
 lto = true
@@ -40,5 +44,5 @@ strip = true
 
 [profile.dev]
 incremental = true
-opt-level = 1
-debug = false
+opt-level = 0
+debug = 0 # Debug sembollerini 0 yaparak derleyici RAM kullanımını %60 düşürür

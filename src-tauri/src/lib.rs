@@ -57,7 +57,17 @@ struct ActiveCapture {
     is_gif: bool,
 }
 
+#[derive(Clone)]
+struct ReplayBufferState {
+    buffer_dir: String,
+    #[allow(dead_code)]
+    duration_secs: u32,
+    #[allow(dead_code)]
+    child: Arc<Mutex<Option<CommandChild>>>,
+}
+
 struct RecorderState(Mutex<Option<ActiveCapture>>);
+struct ReplayState(Mutex<Option<ReplayBufferState>>);
 
 // ==================== LOGGING ====================
 
@@ -115,6 +125,29 @@ fn read_recent_log(lines: usize) -> Result<String, String> {
     Ok(out.join("\n"))
 }
 
+// ==================== AUTOSTART ====================
+
+#[tauri::command]
+fn set_autostart(enable: bool) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use winreg::enums::*;
+        use winreg::RegKey;
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let path = r"Software\Microsoft\Windows\CurrentVersion\Run";
+        if let Ok(key) = hkcu.open_subkey_with_flags(path, KEY_SET_VALUE) {
+            if enable {
+                if let Ok(exe_path) = std::env::current_exe() {
+                    let _ = key.set_value("COSRecorder", &exe_path.to_string_lossy().as_ref());
+                }
+            } else {
+                let _ = key.delete_value("COSRecorder");
+            }
+        }
+    }
+    Ok(())
+}
+
 // ==================== FILENAME ====================
 
 fn render_filename(template: &str, is_gif: bool) -> String {
@@ -151,9 +184,7 @@ fn map_preset(codec: &str, preset: &str) -> &'static str {
             "slow" => "p7",
             _ => "p1",
         },
-        "h264_amf" => match preset {
-            _ => "speed",
-        },
+        "h264_amf" => "speed",
         _ => match preset {
             "ultrafast" => "ultrafast",
             "superfast" => "superfast",
@@ -188,7 +219,7 @@ async fn probe_encoders(app: tauri::AppHandle) -> Result<EncoderCapabilities, St
     })
 }
 
-// ==================== CPAL AUDIO DEVICE DISCOVERY ====================
+// ==================== AUDIO ====================
 
 #[tauri::command]
 fn get_output_devices() -> Result<Vec<String>, String> {
@@ -263,7 +294,13 @@ fn spawn_audio_capture(
     std::thread::spawn(move || {
         let spec_channels = spec.channels as f64;
         let spec_sample_rate = spec.sample_rate as f64;
-        let mut writer = WavWriter::create(&path, spec).expect("Failed to create wav file");
+        let mut writer = match WavWriter::create(&path, spec) {
+            Ok(w) => w,
+            Err(e) => {
+                log::error!("Failed to create wav file {}: {}", path, e);
+                return;
+            }
+        };
         
         let mut started = false;
         let mut start_time = std::time::Instant::now();
@@ -301,10 +338,12 @@ fn spawn_audio_capture(
 
             std::thread::sleep(Duration::from_millis(5));
         }
-        let _ = writer.finalize();
+        if let Err(e) = writer.finalize() {
+            log::error!("Error finalizing WAV writer: {}", e);
+        }
     });
 
-    let err_fn = |err| eprintln!("Audio stream error: {}", err);
+    let err_fn = |err| log::error!("Audio stream error: {}", err);
 
     let stream = match sample_format {
         cpal::SampleFormat::F32 => device.build_input_stream(
@@ -340,6 +379,226 @@ fn spawn_audio_capture(
     Ok((stream, is_recording))
 }
 
+// ==================== REPLAY BUFFER ====================
+
+#[tauri::command]
+async fn start_replay_buffer(
+    app: tauri::AppHandle,
+    encoder: String,
+    duration_secs: u32,
+    state: State<'_, ReplayState>,
+) -> Result<(), String> {
+    let mut lock = state.0.lock().unwrap();
+    if lock.is_some() {
+        return Err("Replay buffer zaten aktif.".into());
+    }
+
+    let buf_dir = std::env::temp_dir().join("COSRecorder_Replay");
+    let _ = fs::remove_dir_all(&buf_dir);
+    fs::create_dir_all(&buf_dir).map_err(|e| e.to_string())?;
+
+    let selected_codec = match encoder.as_str() {
+        "nvenc" => "h264_nvenc",
+        "amf" => "h264_amf",
+        _ => "libx264",
+    };
+
+    let output_pattern = buf_dir.join("segment_%03d.ts").to_string_lossy().replace('\\', "/");
+
+    let mut args = vec![
+        "-y".to_string(),
+        "-f".to_string(), "gdigrab".to_string(),
+        "-framerate".to_string(), "60".to_string(),
+        "-i".to_string(), "desktop".to_string(),
+        "-c:v".to_string(), selected_codec.to_string(),
+    ];
+
+    if selected_codec == "h264_nvenc" {
+        args.extend(vec![
+            "-preset".to_string(), "p1".to_string(),
+            "-rc".to_string(), "constqp".to_string(),
+            "-qp".to_string(), "23".to_string(),
+            "-pix_fmt".to_string(), "yuv420p".to_string(),
+        ]);
+    } else {
+        args.extend(vec![
+            "-preset".to_string(), "ultrafast".to_string(),
+            "-crf".to_string(), "22".to_string(),
+            "-pix_fmt".to_string(), "yuv420p".to_string(),
+        ]);
+    }
+
+    let segment_count = (duration_secs / 3) + 2;
+
+    args.extend(vec![
+        "-f".to_string(), "segment".to_string(),
+        "-segment_time".to_string(), "3".to_string(),
+        "-segment_wrap".to_string(), format!("{}", segment_count),
+        "-reset_timestamps".to_string(), "1".to_string(),
+        output_pattern,
+    ]);
+
+    log::info!("Starting Replay Buffer FFmpeg: {:?}", args);
+
+    let (_, child) = app
+        .shell()
+        .sidecar("ffmpeg")
+        .map_err(|e| format!("Sidecar izni hatası: {}", e))?
+        .args(&args)
+        .spawn()
+        .map_err(|e| format!("FFmpeg başlatılamadı: {}", e))?;
+
+    *lock = Some(ReplayBufferState {
+        buffer_dir: buf_dir.to_string_lossy().to_string(),
+        duration_secs,
+        child: Arc::new(Mutex::new(Some(child))),
+    });
+
+    log::info!("Replay Buffer Started ({} seconds)", duration_secs);
+    Ok(())
+}
+
+#[tauri::command]
+async fn save_replay_clip(
+    app: tauri::AppHandle,
+    output_dir: String,
+    state: State<'_, ReplayState>,
+) -> Result<String, String> {
+    let replay = {
+        let lock = state.0.lock().unwrap();
+        let Some(ref r) = *lock else {
+            return Err("Replay Buffer çalışmıyor. Lütfen önce başlatın.".into());
+        };
+        r.clone()
+    };
+
+    let target_dir = Path::new(&output_dir);
+    if !target_dir.exists() {
+        let _ = fs::create_dir_all(target_dir).map_err(|e| e.to_string())?;
+    }
+
+    let buf_dir = Path::new(&replay.buffer_dir);
+    
+    let mut ts_files: Vec<PathBuf> = match fs::read_dir(buf_dir) {
+        Ok(entries) => entries
+            .flatten()
+            .filter_map(|e| {
+                let p = e.path();
+                if p.extension().and_then(|s| s.to_str()) == Some("ts") {
+                    if fs::metadata(&p).map(|m| m.len() > 100).unwrap_or(false) {
+                        Some(p)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect(),
+        Err(e) => return Err(format!("Buffer dizini okunamadı: {}", e)),
+    };
+
+    if ts_files.is_empty() {
+        return Err("Henüz yeterli buffer parçası oluşmadı. Lütfen birkaç saniye bekleyin.".into());
+    }
+
+    ts_files.sort_by_key(|p| fs::metadata(p).and_then(|m| m.modified()).ok());
+
+    let list_file = buf_dir.join("concat_list.txt");
+    let mut concat_content = String::new();
+    for f in &ts_files {
+        let clean_path = f.to_string_lossy().replace('\\', "/");
+        concat_content.push_str(&format!("file '{}'\n", clean_path));
+    }
+    fs::write(&list_file, concat_content).map_err(|e| e.to_string())?;
+
+    let clip_name = render_filename("COSRecorder_Clip_%datetime%", false);
+    let final_path = target_dir.join(&clip_name).to_string_lossy().to_string();
+
+    let mux_args = vec![
+        "-y".to_string(),
+        "-f".to_string(), "concat".to_string(),
+        "-safe".to_string(), "0".to_string(),
+        "-i".to_string(), list_file.to_string_lossy().replace('\\', "/"),
+        "-c".to_string(), "copy".to_string(),
+        "-movflags".to_string(), "+faststart".to_string(),
+        final_path.clone(),
+    ];
+
+    let out = app
+        .shell()
+        .sidecar("ffmpeg")
+        .map_err(|e| e.to_string())?
+        .args(&mux_args)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if out.status.success() && fs::metadata(&final_path).map(|m| m.len() > 1024).unwrap_or(false) {
+        let _ = app.notification().builder().title("COSRecorder Klip").body("Klip kaydedildi!").show();
+        let _ = app.opener().reveal_item_in_dir(&final_path);
+        Ok(final_path)
+    } else {
+        Err("Klip oluşturulamadı.".into())
+    }
+}
+
+// ==================== SCREENSHOT ====================
+
+#[tauri::command]
+async fn take_screenshot(
+    app: tauri::AppHandle,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    output_dir: String,
+) -> Result<String, String> {
+    let even_w = if w % 2 != 0 { w - 1 } else { w };
+    let even_h = if h % 2 != 0 { h - 1 } else { h };
+
+    let target_dir_str = if output_dir.trim().is_empty() {
+        r"D:\Videolar".to_string()
+    } else {
+        output_dir
+    };
+    
+    let target_path = Path::new(&target_dir_str);
+    if !target_path.exists() {
+        let _ = fs::create_dir_all(target_path);
+    }
+
+    let filename = format!("COSScreenshot_{}.png", Local::now().format("%Y-%m-%d_%H-%M-%S"));
+    let final_path = target_path.join(&filename).to_string_lossy().to_string();
+
+    let args = vec![
+        "-y".to_string(),
+        "-f".to_string(), "gdigrab".to_string(),
+        "-offset_x".to_string(), x.to_string(),
+        "-offset_y".to_string(), y.to_string(),
+        "-video_size".to_string(), format!("{}x{}", even_w, even_h),
+        "-i".to_string(), "desktop".to_string(),
+        "-vframes".to_string(), "1".to_string(),
+        final_path.clone(),
+    ];
+
+    let out = app
+        .shell()
+        .sidecar("ffmpeg")
+        .map_err(|e| e.to_string())?
+        .args(&args)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if out.status.success() && fs::metadata(&final_path).map(|m| m.len() > 100).unwrap_or(false) {
+        let _ = app.notification().builder().title("COSRecorder").body("Ekran görüntüsü kaydedildi.").show();
+        Ok(final_path)
+    } else {
+        Err("Ekran görüntüsü alınamadı.".into())
+    }
+}
+
 // ==================== CAPTURE ====================
 
 #[tauri::command]
@@ -359,12 +618,14 @@ async fn start_capture(
     preset: String,
     encoder: String,
     export_gif: bool,
+    gif_fps: u32,
     output_dir: String,
     record_system_audio: bool,
     record_mic: bool,
     sys_audio_device: String,
     mic_device: String,
     draw_mouse: bool,
+    show_timer: bool,
     filename_template: String,
     state: State<'_, RecorderState>,
 ) -> Result<(), String> {
@@ -393,13 +654,9 @@ async fn start_capture(
         }
     }
 
-    let even_w = if w % 2 != 0 { w - 1 } else { w };
-    let even_h = if h % 2 != 0 { h - 1 } else { h };
-
     let final_file_name = render_filename(&filename_template, export_gif);
     let final_output_path = target_path.join(&final_file_name).to_string_lossy().to_string();
 
-    // DÜZELTME: final_file_name zaten .mp4 ekini barındırdığı için ekstra .mp4 uzantısını kaldırdık
     let temp_video_path = target_path.join(format!("temp_vid_{}", final_file_name)).to_string_lossy().to_string();
     let temp_sys_path = target_path.join(format!("temp_sys_{}.wav", final_file_name)).to_string_lossy().to_string();
     let temp_mic_path = target_path.join(format!("temp_mic_{}.wav", final_file_name)).to_string_lossy().to_string();
@@ -437,63 +694,53 @@ async fn start_capture(
         }
     }
 
-    let mut ffmpeg_args: Vec<String> = vec![
-        "-y".to_string(),
-        "-f".to_string(),
-        "gdigrab".to_string(),
-        "-framerate".to_string(),
-        fps.clone(),
-        "-rtbufsize".to_string(),
-        "512M".to_string(),
-        "-draw_mouse".to_string(),
-        if draw_mouse { "1" } else { "0" }.to_string(),
-        "-offset_x".to_string(),
-        x.to_string(),
-        "-offset_y".to_string(),
-        y.to_string(),
-        "-video_size".to_string(),
-        format!("{}x{}", even_w, even_h),
-        "-i".to_string(),
-        "desktop".to_string(),
-        "-progress".to_string(),
-        "pipe:1".to_string(),
-        "-nostats".to_string(),
-    ];
-
     let output_target = if export_gif {
         final_output_path.clone()
     } else {
         temp_video_path.clone()
     };
 
+    let even_w = if w % 2 != 0 { w - 1 } else { w };
+    let even_h = if h % 2 != 0 { h - 1 } else { h };
+
+    let valid_gif_fps = if gif_fps == 30 { 30 } else { 15 };
+    let current_fps = if export_gif { valid_gif_fps.to_string() } else { fps.clone() };
+
+    let mut ffmpeg_args: Vec<String> = vec![
+        "-y".to_string(),
+        "-f".to_string(), "gdigrab".to_string(),
+        "-framerate".to_string(), current_fps,
+        "-offset_x".to_string(), x.to_string(),
+        "-offset_y".to_string(), y.to_string(),
+        "-video_size".to_string(), format!("{}x{}", even_w, even_h),
+        "-draw_mouse".to_string(), if draw_mouse { "1" } else { "0" }.to_string(),
+        "-i".to_string(), "desktop".to_string(),
+        "-progress".to_string(), "pipe:1".to_string(),
+        "-nostats".to_string(),
+    ];
+
     if export_gif {
+        let gif_vf = format!(
+            "fps={},scale=800:-1:flags=lanczos,split[s0][s1];[s0]palettegen=stats_mode=single[p];[s1][p]paletteuse=new=1:dither=bayer:bayer_scale=5",
+            valid_gif_fps
+        );
+
         ffmpeg_args.extend(vec![
-            "-vf".into(),
-            "fps=15,scale=800:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse".into(),
+            "-vf".into(), gif_vf,
+            "-loop".into(), "0".into(),
             output_target.clone(),
         ]);
     } else {
         let effective_preset = map_preset(selected_codec, &preset);
-        
-        let bitrate = "5M";
-        let maxrate = "8M";
-        let bufsize = "10M";
-
-        log::info!(
-            "Optimizing Capture: Codec={}, FPS={}, Preset={}, TargetBitrate={}",
-            selected_codec, fps, effective_preset, bitrate
-        );
 
         match selected_codec {
             "h264_nvenc" => {
                 ffmpeg_args.extend(vec![
                     "-c:v".into(), "h264_nvenc".into(),
                     "-preset".into(), effective_preset.to_string(),
-                    "-b:v".into(), bitrate.into(),
-                    "-maxrate".into(), maxrate.into(),
-                    "-bufsize".into(), bufsize.into(),
+                    "-rc".into(), "constqp".into(),
+                    "-qp".into(), "23".into(),
                     "-pix_fmt".into(), "yuv420p".into(),
-                    "-fps_mode".into(), "cfr".into(),
                     output_target.clone(),
                 ]);
             }
@@ -501,11 +748,10 @@ async fn start_capture(
                 ffmpeg_args.extend(vec![
                     "-c:v".into(), "h264_amf".into(),
                     "-quality".into(), effective_preset.to_string(),
-                    "-b:v".into(), bitrate.into(),
-                    "-maxrate".into(), maxrate.into(),
-                    "-bufsize".into(), bufsize.into(),
+                    "-rc".into(), "cqp".into(),
+                    "-qp_p".into(), "23".into(),
+                    "-qp_i".into(), "23".into(),
                     "-pix_fmt".into(), "yuv420p".into(),
-                    "-fps_mode".into(), "cfr".into(),
                     output_target.clone(),
                 ]);
             }
@@ -514,19 +760,14 @@ async fn start_capture(
                     "-c:v".into(), "libx264".into(),
                     "-preset".into(), effective_preset.to_string(),
                     "-tune".into(), "zerolatency".into(),
-                    "-b:v".into(), bitrate.into(),
-                    "-maxrate".into(), maxrate.into(),
-                    "-bufsize".into(), bufsize.into(),
+                    "-crf".into(), "22".into(),
                     "-pix_fmt".into(), "yuv420p".into(),
-                    "-fps_mode".into(), "cfr".into(),
                     "-threads".into(), "0".into(),
                     output_target.clone(),
                 ]);
             }
         }
     }
-
-    log::info!("Starting FFmpeg: {:?}", ffmpeg_args);
 
     let (mut rx, child) = app
         .shell()
@@ -614,10 +855,14 @@ async fn start_capture(
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.hide();
     }
-    if let Some(w) = app.get_webview_window("timer") {
-        let _ = w.show();
-        let _ = w.set_focus();
+    
+    if show_timer {
+        if let Some(w) = app.get_webview_window("timer") {
+            let _ = w.show();
+            let _ = w.set_focus();
+        }
     }
+    
     let _ = app.emit("recording-started", ());
 
     Ok(())
@@ -649,8 +894,20 @@ fn stop_capture(app: tauri::AppHandle, state: State<'_, RecorderState>) -> Resul
         tokio::time::sleep(Duration::from_millis(1500)).await;
 
         if capture.is_gif {
-            let _ = app_clone.emit("recording-stopped", serde_json::json!({ "path": capture.final_output_path }));
-            let _ = app_clone.notification().builder().title("COSRecorder").body("GIF kaydedildi.").show();
+            let gif_ok = fs::metadata(&capture.final_output_path)
+                .map(|m| m.len() > 100)
+                .unwrap_or(false);
+
+            if gif_ok {
+                let _ = app_clone.emit("recording-stopped", serde_json::json!({ "path": capture.final_output_path }));
+                let _ = app_clone.notification().builder().title("COSRecorder").body("GIF kaydedildi.").show();
+                let _ = app_clone.opener().reveal_item_in_dir(&capture.final_output_path);
+            } else {
+                let msg = "GIF dosyası oluşturulamadı.".to_string();
+                log::error!("{msg}");
+                let _ = app_clone.emit("recording-error", msg);
+                let _ = app_clone.emit("recording-stopped", serde_json::json!({ "path": "" }));
+            }
             return;
         }
 
@@ -690,13 +947,15 @@ fn stop_capture(app: tauri::AppHandle, state: State<'_, RecorderState>) -> Resul
             capture.final_output_path.clone(),
         ]);
 
-        let out = app_clone
-            .shell()
-            .sidecar("ffmpeg")
-            .unwrap()
-            .args(&mux_args)
-            .output()
-            .await;
+        let sidecar_res = app_clone.shell().sidecar("ffmpeg");
+        let out = match sidecar_res {
+            Ok(cmd) => cmd.args(&mux_args).output().await,
+            Err(e) => {
+                log::error!("Sidecar error during muxing: {}", e);
+                let _ = app_clone.emit("recording-error", format!("Muxing başlatılamadı: {}", e));
+                return;
+            }
+        };
 
         let _ = fs::remove_file(&capture.temp_video_path);
         if let Some(sys) = capture.temp_sys_path { let _ = fs::remove_file(sys); }
@@ -855,7 +1114,7 @@ fn list_recordings(dir: String) -> Result<Vec<RecordingFile>, String> {
         let path = entry.path();
         if !path.is_file() { continue; }
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-        if ext != "mp4" && ext != "gif" { continue; }
+        if ext != "mp4" && ext != "gif" && ext != "png" { continue; }
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if name.starts_with("temp_") { continue; }
         let meta = match entry.metadata() { Ok(m) => m, Err(_) => continue };
@@ -930,9 +1189,13 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(RecorderState(Mutex::new(None)))
+        .manage(ReplayState(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             start_capture,
             stop_capture,
+            take_screenshot,
+            start_replay_buffer,
+            save_replay_clip,
             check_disk_space,
             get_output_devices,
             get_input_devices,
@@ -948,6 +1211,7 @@ pub fn run() {
             discard_orphan,
             probe_encoders,
             read_recent_log,
+            set_autostart,
         ])
         .setup(|app| {
             let config_i = MenuItem::with_id(app, "config", "Ayarlar", true, None::<&str>)?;
@@ -987,20 +1251,41 @@ pub fn run() {
         })
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_shortcuts(["ctrl+shift+r"])
+                .with_shortcuts(["ctrl+shift+r", "alt+c", "ctrl+shift+c"])
                 .expect("Failed to register shortcut")
-                .with_handler(|app, _shortcut, event| {
+                .with_handler(|app, shortcut, event| {
                     if event.state == ShortcutState::Pressed {
-                        let state = app.state::<RecorderState>();
-                        let is_recording = state.0.lock().unwrap().is_some();
-                        if is_recording {
-                            let _ = stop_capture(app.clone(), state);
-                        } else if let Some(w) = app.get_webview_window("main") {
-                            if w.is_visible().unwrap_or(false) {
-                                let _ = w.hide();
-                            } else {
-                                let _ = w.show();
-                                let _ = w.set_focus();
+                        let sc_str = shortcut.to_string().to_lowercase();
+                        if sc_str.contains("alt+c") || sc_str.contains("ctrl+shift+c") {
+                            let app_handle = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                let dir = "D:\\Videolar".to_string();
+                                match save_replay_clip(app_handle.clone(), dir, app_handle.state()).await {
+                                    Ok(path) => {
+                                        log::info!("Klip oluşturuldu: {}", path);
+                                    }
+                                    Err(e) => {
+                                        let _ = app_handle.notification()
+                                            .builder()
+                                            .title("COSRecorder Uyarısı")
+                                            .body(&e)
+                                            .show();
+                                    }
+                                }
+                            });
+                        } else {
+                            let state = app.state::<RecorderState>();
+                            let is_recording = state.0.lock().unwrap().is_some();
+                            if is_recording {
+                                let _ = stop_capture(app.clone(), state);
+                            } else if let Some(w) = app.get_webview_window("main") {
+                                let is_visible = w.is_visible().unwrap_or(false);
+                                if is_visible {
+                                    let _ = w.hide();
+                                } else {
+                                    let _ = w.show();
+                                    let _ = w.set_focus();
+                                }
                             }
                         }
                     }
